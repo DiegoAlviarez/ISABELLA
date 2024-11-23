@@ -1,125 +1,86 @@
 import streamlit as st
 import pandas as pd
-from utils import (
-    create_scoring_chart,
-    create_efficiency_chart,
-    create_team_stats,
-    create_player_radar_chart
-)
+import requests
+from io import BytesIO
+from PIL import Image
 
-# Page configuration
+# URLs de los archivos y gráficos
+url_datos = 'https://github.com/gabogam3r53/PowersRangers/raw/develop/Datos/datos_todas_las_jugadoras_posibles.xlsx'
+url_grafica_contrato = 'https://github.com/gabogam3r53/PowersRangers/raw/develop/Analisis_Datos/Graficas/Contratos_contra_estadisticas_interesantes_todos_mas_datos.png'
+dir_graficas_individuales = 'https://raw.githubusercontent.com/gabogam3r53/PowersRangers/refs/heads/develop/Analisis_Datos/Graficas/Graficas_datos_individuales/'
+dir_graficas_por_ano = 'https://raw.githubusercontent.com/gabogam3r53/PowersRangers/refs/heads/develop/Analisis_Datos/Graficas/Graficas_datos_liga_por_a%C3%B1o/'
+
+# Configuración de la página
 st.set_page_config(
-    page_title="WNBA Statistics Dashboard",
-    page_icon="🏀",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Estadísticas WNBA",
+    layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-    <style>
-    .main {
-        padding: 1rem;
-    }
-    .stPlotlyChart {
-        background-color: white;
-        border-radius: 5px;
-        padding: 1rem;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("Estadísticas de Jugadoras de la WNBA (2016-2024)")
 
-# Title and description
-st.title("🏀 WNBA Statistics Dashboard (2016-2024)")
-st.markdown("""
-Explore comprehensive WNBA player and team statistics from 2016 to 2024. 
-This dashboard provides insights into player performance, team statistics, and historical trends.
-""")
-
-# Sample data loading (replace with actual data from your repository)
+# Función para cargar datos de Excel con manejo de errores
 @st.cache_data
-def load_data():
-    # This is a placeholder. Replace with actual data from your files
-    return pd.DataFrame({
-        'Year': range(2016, 2025),
-        'Player': ['Player ' + str(i) for i in range(1, 10)],
-        'Team': ['Team A', 'Team B', 'Team C'] * 3,
-        'PPG': [20 + i for i in range(1, 10)],
-        'RPG': [5 + i for i in range(1, 10)],
-        'APG': [3 + i for i in range(1, 10)],
-        'FG%': [45 + i for i in range(1, 10)],
-        'FT%': [80 + i for i in range(1, 10)],
-        '3P%': [35 + i for i in range(1, 10)]
-    })
+def cargar_datos():
+    try:
+        st.info("Cargando datos desde el archivo remoto...")
+        response = requests.get(url_datos, timeout=10)
+        response.raise_for_status()  # Verifica si hubo errores en la solicitud
+        data = response.content
+        return pd.read_excel(BytesIO(data))
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error al cargar los datos: {e}")
+        return pd.DataFrame()  # Retorna un DataFrame vacío si falla
 
-# Load data
-df = load_data()
+# Función para mostrar imágenes con manejo de errores
+def mostrar_imagen(url):
+    try:
+        st.info("Cargando imagen...")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # Verifica si hubo errores en la solicitud
+        image = Image.open(BytesIO(response.content))
+        st.image(image, use_column_width=True)
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error al cargar la imagen: {e}")
+    except Image.UnidentifiedImageError:
+        st.error("No se pudo identificar el archivo de imagen.")
 
-# Sidebar filters
-st.sidebar.header("📊 Filters")
-selected_year = st.sidebar.slider("Select Year", 2016, 2024, 2024)
-selected_team = st.sidebar.multiselect(
-    "Select Team(s)",
-    options=sorted(df['Team'].unique()),
-    default=None
-)
+# Cargar datos
+datos = cargar_datos()
+if not datos.empty:
+    # Mostrar tabla de datos
+    st.write("## Estadísticas de Jugadoras")
+    st.dataframe(datos)
 
-# Main content
-tab1, tab2, tab3 = st.tabs(["📈 Player Stats", "🏆 Team Analysis", "🔍 Player Search"])
+    # Mostrar gráfica de contrato
+    st.write("## Gráfica: Contrato contra Estadísticas Interesantes")
+    mostrar_imagen(url_grafica_contrato)
 
-with tab1:
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.plotly_chart(
-            create_scoring_chart(df, selected_year),
-            use_container_width=True
-        )
-    
-    with col2:
-        st.plotly_chart(
-            create_efficiency_chart(df, selected_year),
-            use_container_width=True
-        )
-
-with tab2:
-    st.header("Team Statistics")
-    team_stats = create_team_stats(df, selected_year)
-    st.dataframe(
-        team_stats,
-        use_container_width=True,
-        height=400
+    # Selección y gráfica de jugadoras individuales
+    st.write("## Gráfica: Jugadoras individuales")
+    jugadoras = datos['Nombre']
+    jugadora_seleccionada = st.selectbox(
+        "Selecciona una jugadora para ver su gráfica individual:", jugadoras
     )
 
-with tab3:
-    st.header("Player Search")
-    search_col1, search_col2 = st.columns([2, 1])
-    
-    with search_col1:
-        player_search = st.text_input("Search for a player:")
-        if player_search:
-            filtered_df = df[df['Player'].str.contains(player_search, case=False)]
-            if not filtered_df.empty:
-                st.dataframe(filtered_df)
-                
-                # Show player radar chart
-                selected_player = st.selectbox(
-                    "Select player for detailed view:",
-                    filtered_df['Player'].unique()
-                )
-                player_data = filtered_df[filtered_df['Player'] == selected_player].iloc[0]
-                st.plotly_chart(
-                    create_player_radar_chart(player_data),
-                    use_container_width=True
-                )
-            else:
-                st.warning("No players found matching your search.")
+    if jugadora_seleccionada:
+        nombre_archivo = jugadora_seleccionada.replace(' ', '_') + '.png'
+        grafica_url = dir_graficas_individuales + nombre_archivo
+        mostrar_imagen(grafica_url)
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center'>
-    <p>Data source: WNBA Statistics (2016-2024)</p>
-</div>
-""", unsafe_allow_html=True)
+    # Selección y gráfica de estadísticas por año
+    st.write("## Gráfica: Media de estadísticas a través de los años")
+    caracteristica = [
+        'RANK', 'AGE', 'GP', 'MIN', 'PTS', 'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%',
+        'FTM', 'FTA', 'FT%', 'OREB', 'DREB', 'AST', 'TOV', 'STL', 'BLK', 'PF', '+-', 'DD2', 'FP', 'TD3'
+    ]
+    caracteristica_seleccionada = st.selectbox(
+        "Selecciona una estadística para ver su gráfica a través de los años:", caracteristica
+    )
+
+    if caracteristica_seleccionada:
+        nombre_archivo = caracteristica_seleccionada.replace(' ', '_') + '.png'
+        grafica_url = dir_graficas_por_ano + nombre_archivo
+        mostrar_imagen(grafica_url)
+else:
+    st.error("No se pudieron cargar los datos. Por favor, revisa la fuente de datos.")
+
