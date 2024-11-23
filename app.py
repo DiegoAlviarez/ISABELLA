@@ -13,8 +13,8 @@ def main():
 
     # Load data
     data = load_data(DATA_URL)
-    if data is None:
-        st.error("Failed to load data. Please try again later.")
+    if data is None or data.empty:
+        st.error("Failed to load data. Please check the source or try again later.")
         return
 
     # Create three main sections using columns
@@ -32,6 +32,8 @@ def main():
             contract_image = load_image(CONTRACT_GRAPH_URL)
             if contract_image:
                 st.image(contract_image, use_column_width=True)
+            else:
+                st.error("Could not load contract statistics image.")
 
     with col2:
         # Individual Player Analysis Section
@@ -46,6 +48,8 @@ def main():
             player_image = load_image(player_graph_url)
             if player_image:
                 st.image(player_image, use_column_width=True)
+            else:
+                st.error(f"Could not load individual graph for {player}.")
 
         # Yearly Statistics Section
         with st.container():
@@ -59,6 +63,8 @@ def main():
             stat_image = load_image(stat_graph_url)
             if stat_image:
                 st.image(stat_image, use_column_width=True)
+            else:
+                st.error(f"Could not load yearly statistics graph for {stat}.")
 
 if __name__ == "__main__":
     main()
