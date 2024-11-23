@@ -34,40 +34,11 @@ def render_player_analysis(data, player_image):
     with st.container():
         st.subheader("👤 Player Analysis")
         
-        # Validate required columns
-        required_columns = ['Nombre', 'Team']
-        missing_columns = [col for col in required_columns if col not in data.columns]
-        if missing_columns:
-            st.error(f"Missing required columns: {', '.join(missing_columns)}")
-            return
-
-        # Player selection with additional filters
-        col1, col2 = st.columns(2)
-        with col1:
-            teams = sorted(data['Team'].dropna().unique())
-            team_filter = st.multiselect(
-                "Filter by Team:",
-                options=teams
-            )
+        # Player selection without team filter initially
+        available_players = data['Nombre'].dropna().unique() if 'Nombre' in data.columns else []
         
-        with col2:
-            positions = sorted(data['Position'].dropna().unique()) if 'Position' in data.columns else []
-            position_filter = st.multiselect(
-                "Filter by Position:",
-                options=positions
-            )
-        
-        # Filter players based on selections
-        filtered_data = data.copy()
-        if team_filter:
-            filtered_data = filtered_data[filtered_data['Team'].isin(team_filter)]
-        if position_filter:
-            filtered_data = filtered_data[filtered_data['Position'].isin(position_filter)]
-        
-        # Ensure we have players to display
-        available_players = filtered_data['Nombre'].dropna().unique()
         if len(available_players) == 0:
-            st.warning("No players found with the selected filters.")
+            st.error("No player data available.")
             return
             
         player = st.selectbox(
@@ -76,34 +47,44 @@ def render_player_analysis(data, player_image):
         )
         
         # Display player information
-        if player_image is not None:
-            st.image(player_image, use_column_width=True)
+        if player:
+            player_data = data[data['Nombre'] == player].iloc[0]
             
-            # Player stats summary
-            if not filtered_data.empty:
-                player_stats = filtered_data[filtered_data['Nombre'] == player].iloc[0]
-                st.write("### Quick Stats")
-                cols = st.columns(4)
-                stats = ['PTS', 'AST', 'REB', 'FG%']
-                available_stats = get_valid_columns(filtered_data, stats)
-                
-                for col, stat in zip(cols, available_stats):
-                    try:
-                        value = player_stats[stat]
-                        if pd.notna(value):  # Check if value is not NaN
-                            col.metric(stat, f"{value:.1f}")
-                        else:
-                            col.metric(stat, "N/A")
-                    except Exception:
+            # Display available stats
+            st.write("### Quick Stats")
+            cols = st.columns(4)
+            stats = ['PTS', 'AST', 'REB', 'FG%']
+            available_stats = get_valid_columns(data, stats)
+            
+            for col, stat in zip(cols, available_stats):
+                try:
+                    value = player_data[stat]
+                    if pd.notna(value):  # Check if value is not NaN
+                        col.metric(stat, f"{value:.1f}")
+                    else:
                         col.metric(stat, "N/A")
-        else:
-            st.warning("Player statistics visualization is currently unavailable.")
+                except Exception:
+                    col.metric(stat, "N/A")
+            
+            # Try to load and display player image
+            try:
+                if player_image is not None:
+                    st.image(player_image, use_column_width=True)
+            except Exception:
+                st.warning("Player visualization is currently unavailable.")
 
 def render_yearly_stats(stat_image):
     with st.container():
         st.subheader("📈 Yearly Statistics")
         
-        # Organize stats in categories
+        # Get available stats from the actual data columns
+        available_stats = get_valid_columns(st.session_state.get('data', pd.DataFrame()), STATS_COLUMNS)
+        
+        if not available_stats:
+            st.error("No statistics data available.")
+            return
+            
+        # Organize available stats in categories
         categories = {
             "Scoring": ['PTS', 'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%', 'FTM', 'FTA', 'FT%'],
             "Rebounds": ['OREB', 'DREB'],
@@ -112,11 +93,12 @@ def render_yearly_stats(stat_image):
             "Other": ['RANK', 'AGE', 'GP', 'MIN', '+-', 'DD2', 'FP', 'TD3']
         }
         
-        # Filter out categories with no valid stats
+        # Filter categories to only include available stats
         valid_categories = {}
         for category, stats in categories.items():
-            if any(stat in STATS_COLUMNS for stat in stats):
-                valid_categories[category] = [stat for stat in stats if stat in STATS_COLUMNS]
+            valid_stats = [stat for stat in stats if stat in available_stats]
+            if valid_stats:
+                valid_categories[category] = valid_stats
         
         if not valid_categories:
             st.error("No valid statistics categories available.")
@@ -126,15 +108,18 @@ def render_yearly_stats(stat_image):
         category = st.selectbox("Select category:", list(valid_categories.keys()))
         stat = st.selectbox("Select statistic:", valid_categories[category])
         
-        if stat_image is not None:
-            st.image(stat_image, use_column_width=True)
-            with st.expander("Understanding this trend"):
-                st.write(f"""
-                This visualization shows how the {stat} statistic has evolved over the years 
-                in the WNBA. It helps identify league-wide trends and patterns in player performance.
-                """)
-        else:
-            st.warning(f"Visualization for {stat} is currently unavailable.")
+        try:
+            if stat_image is not None:
+                st.image(stat_image, use_column_width=True)
+                with st.expander("Understanding this trend"):
+                    st.write(f"""
+                    This visualization shows how the {stat} statistic has evolved over the years 
+                    in the WNBA. It helps identify league-wide trends and patterns in player performance.
+                    """)
+            else:
+                st.warning(f"Visualization for {stat} is currently unavailable.")
+        except Exception:
+            st.warning("Statistics visualization is currently unavailable.")
 
 def main():
     st.set_page_config(page_title="WNBA Statistics", layout="wide")
@@ -155,18 +140,21 @@ def main():
     # Header
     st.title("🏀 WNBA Player Statistics (2016-2024)")
     
+    # Load data first
+    data = load_data(DATA_URL)
+    if data is None:
+        st.error("Failed to load data. Please try again later.")
+        return
+        
+    # Store data in session state for access across the app
+    st.session_state['data'] = data
+    
     # Navigation
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Go to",
         ["Overview", "Player Analysis", "League Trends"]
     )
-    
-    # Load data
-    data = load_data(DATA_URL)
-    if data is None:
-        st.error("Failed to load data. Please try again later.")
-        return
     
     # Main content based on navigation
     if page == "Overview":
@@ -178,17 +166,22 @@ def main():
             render_contract_analysis(contract_image)
             
     elif page == "Player Analysis":
-        player = st.session_state.get('selected_player', data['Nombre'].iloc[0] if 'Nombre' in data.columns else None)
+        if 'Nombre' not in data.columns:
+            st.error("Player data is not available. Required column 'Nombre' is missing.")
+            return
+            
+        player = data['Nombre'].iloc[0] if not data.empty else None
         if player:
             player_graph_url = f"{INDIVIDUAL_GRAPHS_DIR}{player.replace(' ', '_')}.png"
             player_image = load_image(player_graph_url)
             render_player_analysis(data, player_image)
         else:
-            st.error("Player data is not available.")
+            st.error("No player data available.")
         
     else:  # League Trends
-        stat = st.session_state.get('selected_stat', STATS_COLUMNS[0] if STATS_COLUMNS else None)
-        if stat:
+        available_stats = get_valid_columns(data, STATS_COLUMNS)
+        if available_stats:
+            stat = available_stats[0]
             stat_graph_url = f"{YEARLY_GRAPHS_DIR}{stat.replace(' ', '_')}.png"
             stat_image = load_image(stat_graph_url)
             render_yearly_stats(stat_image)
