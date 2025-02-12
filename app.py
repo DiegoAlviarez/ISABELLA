@@ -1,692 +1,542 @@
+# app.py
 import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
+import joblib
+import numpy as np
+import string
+import random
+import time
+import os
+import base64
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from datetime import datetime
 import plotly.express as px
-from datetime import datetime, timedelta
-import requests
-from streamlit_lottie import st_lottie
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+import openai  # Nueva importación para el chatbot
 
-# Configuración inicial de la página
+# Configuración inicial
+SECURE_FOLDER = "secure_vault"
+os.makedirs(SECURE_FOLDER, exist_ok=True)
+
+# Configuración del chatbot Groq
+GROQ_API_KEY = "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"
+client = openai.OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=GROQ_API_KEY
+)
+MODEL_NAME = "llama3-70b-8192"
+
+def chat_with_groq(messages):
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=1024
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# Inicialización del estado de la sesión
+if 'generated_passwords' not in st.session_state:
+    st.session_state.generated_passwords = []
+
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+
+if 'vault_key' not in st.session_state:
+    st.session_state.vault_key = None
+
+# Configuración de la página
 st.set_page_config(
-    page_title="Análisis Futbolístico",
-    page_icon="⚽",
-    layout="wide"
+    page_title="WildPass Pro",
+    page_icon="🔒",
+    layout="centered",
+    initial_sidebar_state="expanded"
 )
 
-# Función para cargar animaciones Lottie
-def load_lottieurl(url):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+# Animaciones y efectos dinámicos
+st.markdown(f"""
+<style>
+@keyframes gradient {{
+    0% {{background-position: 0% 50%;}}
+    50% {{background-position: 100% 50%;}}
+    100% {{background-position: 0% 50%;}}
+}}
 
-# Cargar datos
-@st.cache_data
-def load_data():
-    spain_data = pd.read_csv('https://raw.githubusercontent.com/AndersonP444/PROYECTO-SIC-JAKDG/main/valores_mercado_actualizados%20(3).csv')
-    bundesliga_data = pd.read_csv('https://raw.githubusercontent.com/AndersonP444/PROYECTO-SIC-JAKDG/main/valores_mercado_bundesliga_actualizado_v2.csv')
-    return spain_data, bundesliga_data
+@keyframes float {{
+    0% {{transform: translateY(0px);}}
+    50% {{transform: translateY(-20px);}}
+    100% {{transform: translateY(0px);}}
+}}
 
-# Función para convertir valores de mercado
-def convertir_valor(valor):
-    if isinstance(valor, str):
-        if "mil €" in valor:
-            return int(float(valor.replace(" mil €", "").replace(",", ".")) * 1_000)
-        elif "mill. €" in valor:
-            return int(float(valor.replace(" mill. €", "").replace(",", ".")) * 1_000_000)
-    return None
+.stApp {{
+    background: linear-gradient(-45deg, #1a1a1a, #2a2a2a, #3a3a3a, #4a4a4a);
+    background-size: 400% 400%;
+    animation: gradient 15s ease infinite;
+    color: white;
+}}
 
-# Función para convertir URLs a imágenes
-def convertir_urls_a_imagenes(df):
-    df_copy = df.copy()
-    for col in df_copy.columns:
-        if df_copy[col].astype(str).str.startswith('http').any():
-            df_copy[col] = df_copy[col].apply(lambda url: f'<img src="{url}" width="50">' if isinstance(url, str) and url.startswith('http') else url)
-    return df_copy
+.main {{
+    background-color: rgba(0, 0, 0, 0.8) !important;
+    padding: 30px;
+    border-radius: 15px;
+    box-shadow: 0 0 30px rgba(255,255,255,0.1);
+    backdrop-filter: blur(10px);
+    animation: slideIn 1s ease-out;
+}}
 
-# Función para generar valores mensuales interpolados
-def generar_valores_mensuales(valor_inicial, valor_final):
-    fecha_inicio = datetime(2024, 1, 1)
-    fecha_actual = datetime.now()
-    meses = []
-    valores = []
+@keyframes slideIn {{
+    from {{transform: translateY(50px); opacity: 0;}}
+    to {{transform: translateY(0); opacity: 1;}}
+}}
+
+h1, h2, h3 {{
+    color: #00ff9d !important;
+    text-shadow: 0 0 10px rgba(0,255,157,0.5);
+}}
+
+.stButton>button {{
+    background: linear-gradient(45deg, #00ff9d, #00b8ff);
+    border: none;
+    color: black !important;
+    border-radius: 25px;
+    transition: all 0.3s ease;
+    animation: float 3s ease-in-out infinite;
+}}
+
+.stButton>button:hover {{
+    transform: scale(1.1);
+    box-shadow: 0 0 20px rgba(0,255,157,0.5);
+}}
+
+.chat-container {{
+    max-height: 500px;
+    overflow-y: auto;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 15px;
+    margin-bottom: 20px;
+    border: 1px solid #00ff9d;
+}}
+
+.user-message {{
+    background: rgba(0, 255, 157, 0.1);
+    padding: 10px;
+    border-radius: 15px;
+    margin: 10px 0;
+    max-width: 70%;
+    float: right;
+    clear: both;
+    border: 1px solid #00ff9d;
+    animation: messageIn 0.5s ease-out;
+}}
+
+.bot-message {{
+    background: rgba(0, 184, 255, 0.1);
+    padding: 10px;
+    border-radius: 15px;
+    margin: 10px 0;
+    max-width: 70%;
+    float: left;
+    clear: both;
+    border: 1px solid #00b8ff;
+    animation: messageIn 0.5s ease-out;
+}}
+
+@keyframes messageIn {{
+    from {{transform: translateX(100px); opacity: 0;}}
+    to {{transform: translateX(0); opacity: 1;}}
+}}
+
+.sidebar .sidebar-content {{
+    background-color: rgba(0, 0, 0, 0.8) !important;
+    backdrop-filter: blur(5px);
+    border-right: 1px solid #00ff9d;
+}}
+
+#particles {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+}}
+</style>
+
+<div id="particles"></div>
+
+<script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
+<script>
+particlesJS('particles', {{
+  "particles": {{
+    "number": {{ "value": 80 }},
+    "color": {{ "value": "#00ff9d" }},
+    "shape": {{ "type": "circle" }},
+    "opacity": {{ "value": 0.5 }},
+    "size": {{ "value": 3 }},
+    "move": {{
+      "enable": true,
+      "speed": 2,
+      "direction": "none",
+      "random": false,
+      "straight": false,
+      "out_mode": "out",
+      "bounce": false
+    }}
+  }},
+  "interactivity": {{
+    "events": {{
+      "onhover": {{ "enable": true, "mode": "repulse" }}
+    }}
+  }}
+}});
+</script>
+""", unsafe_allow_html=True)
+
+class SecureVault:
+    @staticmethod
+    def generate_key(password: str) -> bytes:
+        salt = b'secure_salt_123'
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+
+    @staticmethod
+    def encrypt_file(file_path: str, password: str):
+        key = SecureVault.generate_key(password)
+        fernet = Fernet(key)
+        
+        with open(file_path, "rb") as file:
+            original = file.read()
+        
+        encrypted = fernet.encrypt(original)
+        
+        with open(file_path, "wb") as file:
+            file.write(encrypted)
+
+    @staticmethod
+    def decrypt_file(file_path: str, password: str):
+        key = SecureVault.generate_key(password)
+        fernet = Fernet(key)
+        
+        with open(file_path, "rb") as file:
+            encrypted = file.read()
+        
+        try:
+            decrypted = fernet.decrypt(encrypted)
+            with open(file_path, "wb") as file:
+                file.write(decrypted)
+            return True
+        except:
+            return False
+
+class PasswordModel:
+    def __init__(self):
+        self.model = None
+        self.load_model()
+        self.training_history = []
+
+    def load_model(self):
+        try:
+            self.model = joblib.load("local_pass_model.pkl")
+            st.success("✅ Modelo de seguridad cargado!")
+        except Exception:
+            st.warning("⚠ Modelo no encontrado, entrénalo primero")
+            self.model = None
+
+    def generate_weak_password(self):
+        patterns = [
+            lambda: ''.join(random.choice(string.ascii_lowercase) for _ in range(8)),
+            lambda: ''.join(random.choice(["123456", "password", "qwerty", "admin"])),
+            lambda: ''.join(random.choice(string.digits) for _ in range(6))
+        ]
+        return random.choice(patterns)()
+
+    def generate_strong_password(self):
+        chars = string.ascii_letters + string.digits + string.punctuation
+        return ''.join(random.SystemRandom().choice(chars) for _ in range(16))
+
+    def generate_pin(self, length=6):
+        return ''.join(random.SystemRandom().choice(string.digits) for _ in range(length))
     
-    fecha_actual = fecha_actual.replace(day=1)
-    fecha = fecha_inicio
-    while fecha <= fecha_actual:
-        meses.append(fecha.strftime('%B %Y'))
-        fecha += timedelta(days=32)
-        fecha = fecha.replace(day=1)
-    
-    num_meses = len(meses)
-    for i in range(num_meses):
-        valor = valor_inicial + (valor_final - valor_inicial) * (i / (num_meses - 1))
-        valores.append(valor)
-    
-    return meses, valores
+    def generate_access_key(self):
+        chars = string.ascii_letters + string.digits + "-_"
+        return ''.join(random.SystemRandom().choice(chars) for _ in range(24))
 
-# Cargar datos
-spain_data, bundesliga_data = load_data()
+    def generate_training_data(self, samples=1000):
+        X = []
+        y = []
+        for _ in range(samples//2):
+            X.append(self.extract_features(self.generate_weak_password()))
+            y.append(0)
+            X.append(self.extract_features(self.generate_strong_password()))
+            y.append(1)
+        return np.array(X), np.array(y)
 
-# Procesar datos de España
-spain_data["Valor de Mercado en 01/01/2024"] = spain_data["Valor de Mercado en 01/01/2024"].apply(convertir_valor)
-spain_data["Valor de Mercado Actual"] = spain_data["Valor de Mercado Actual"].apply(convertir_valor)
+    def extract_features(self, password):
+        return [
+            len(password),
+            sum(c.isupper() for c in password),
+            sum(c.isdigit() for c in password),
+            sum(c in string.punctuation for c in password),
+            len(set(password))/max(len(password), 1)
+        ]
 
-# Procesar datos de Bundesliga
-bundesliga_data["Valor de Mercado en 01/01/2024"] = bundesliga_data["Valor de Mercado en 01/01/2024"].apply(convertir_valor)
-bundesliga_data["Valor de Mercado Actual"] = bundesliga_data["Valor de Mercado Actual"].apply(convertir_valor)
+    def train_model(self):
+        try:
+            X, y = self.generate_training_data()
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
-# Sidebar con menú principal
-st.sidebar.title("Menú Principal")
-menu_principal = st.sidebar.radio(
-    "Seleccione una sección:",
-    ["Introducción", "Objetivos", "Metodología", "Herramientas", "Resultados", "Conclusiones"]
-)
-
-# Selector de liga
-liga_seleccionada = st.sidebar.selectbox(
-    "Seleccione la liga:",
-    ["LaLiga", "Bundesliga", "Comparativa"]
-)
-
-# Función para convertir URLs a imágenes
-def convertir_urls_a_imagenes(df):
-    df_copy = df.copy()
-    for col in df_copy.columns:
-        if df_copy[col].astype(str).str.startswith('http').any():
-            df_copy[col] = df_copy[col].apply(lambda url: f'<img src="{url}" width="50">' if isinstance(url, str) and url.startswith('http') else url)
-    return df_copy
-
-# Función para convertir URLs a imágenes
-def convertir_urls_a_imagenes(df):
-    df_copy = df.copy()
-    for col in df_copy.columns:
-        if df_copy[col].astype(str).str.startswith('http').any():
-            df_copy[col] = df_copy[col].apply(lambda url: f'<img src="{url}" width="50">' if isinstance(url, str) and url.startswith('http') else url)
-    return df_copy
-
-# Código principal
-if menu_principal == "Introducción":
-    st.title("Introducción")
-    st.write("""
-    La industria del fútbol ha evolucionado significativamente, convirtiéndose en un mercado 
-    donde el valor de los jugadores es un indicador crucial de su desempeño y potencial.
-    """)
-
-    # Cargar animación Lottie
-    lottie_url = "https://lottie.host/embed/3d48d4b9-51ad-4b7d-9d28-5e248cace11/Rz3QtSCq3.json"
-    lottie_coding = load_lottieurl(lottie_url)
-    if lottie_coding:
-        st_lottie(lottie_coding, height=200, width=300)
-
-    # Mostrar datos según la liga seleccionada
-    if liga_seleccionada == "LaLiga":
-        data_to_show = spain_data
-        title = "Datos de Jugadores de LaLiga"
-    elif liga_seleccionada == "Bundesliga":
-        data_to_show = bundesliga_data
-        title = "Datos de Jugadores de Bundesliga"
-    else:
-        st.subheader("Comparativa entre LaLiga y Bundesliga")
-        
-        # Mostrar tablas en Comparativa
-        def generar_tabla_html(data):
-            data_con_imagenes = convertir_urls_a_imagenes(data)
-            return data_con_imagenes.to_html(escape=False, index=False)
-
-        # Tabla de LaLiga
-        st.write("### LaLiga")
-        tabla_laliga_html = generar_tabla_html(spain_data)
-        st.markdown(tabla_laliga_html, unsafe_allow_html=True)
-
-        # Tabla de Bundesliga
-        st.write("### Bundesliga")
-        tabla_bundesliga_html = generar_tabla_html(bundesliga_data)
-        st.markdown(tabla_bundesliga_html, unsafe_allow_html=True)
-
-    # Mostrar tabla individual con imágenes (si no es Comparativa)
-    if liga_seleccionada != "Comparativa":
-        with st.container():
-            st.subheader(title)
-            data_con_imagenes = convertir_urls_a_imagenes(data_to_show)
-            st.markdown(data_con_imagenes.to_html(escape=False), unsafe_allow_html=True)
-
-if menu_principal == "Metodología":
-    st.title("Metodología")
-    
-    if liga_seleccionada == "Comparativa":
-        st.subheader("Análisis Comparativo: LaLiga vs Bundesliga")
-        
-        # 1. Gráfica de violín
-        st.subheader("1. Distribución General de Valores de Mercado")
-        fig_violin = go.Figure()
-
-        fig_violin.add_trace(go.Violin(
-            y=spain_data['Valor de Mercado Actual'],
-            name='LaLiga',
-            box_visible=True,
-            meanline_visible=True,
-            line_color='blue',
-            fillcolor='rgba(0, 0, 255, 0.3)',
-            opacity=0.7
-        ))
-
-        fig_violin.add_trace(go.Violin(
-            y=bundesliga_data['Valor de Mercado Actual'],
-            name='Bundesliga',
-            box_visible=True,
-            meanline_visible=True,
-            line_color='green',
-            fillcolor='rgba(0, 255, 0, 0.3)',
-            opacity=0.7
-        ))
-
-        fig_violin.update_layout(
-            title="Distribución de Valores de Mercado por Liga",
-            yaxis_title="Valor de Mercado (€)",
-            xaxis_title="Ligas",
-            violingap=0.5,
-            violingroupgap=0.3,
-            showlegend=True
-        )
-
-        st.plotly_chart(fig_violin)
-
-        # 2. Gráfica de dispersión
-        st.subheader("2. Relación Edad vs Valor de Mercado")
-        fig_scatter = go.Figure()
-
-        fig_scatter.add_trace(go.Scatter(
-            x=spain_data['Edad'],
-            y=spain_data['Valor de Mercado Actual'],
-            mode='markers',
-            name='LaLiga',
-            marker=dict(
-                size=10,
-                color='blue',
-                opacity=0.6
-            )
-        ))
-
-        fig_scatter.add_trace(go.Scatter(
-            x=bundesliga_data['Edad'],
-            y=bundesliga_data['Valor de Mercado Actual'],
-            mode='markers',
-            name='Bundesliga',
-            marker=dict(
-                size=10,
-                color='green',
-                opacity=0.6
-            )
-        ))
-
-        fig_scatter.update_layout(
-            title="Relación entre Edad y Valor de Mercado",
-            xaxis_title="Edad",
-            yaxis_title="Valor de Mercado (€)",
-            showlegend=True
-        )
-
-        st.plotly_chart(fig_scatter)
-
-        # 3. Comparativa Individual
-        st.subheader("3. Comparativa Individual de Jugadores")
-        col1, col2 = st.columns(2)
-        with col1:
-            jugador_laliga = st.selectbox("Selecciona un jugador de LaLiga:", spain_data['Nombre'].unique())
-        with col2:
-            jugador_bundesliga = st.selectbox("Selecciona un jugador de Bundesliga:", bundesliga_data['Nombre'].unique())
-
-        datos_laliga = spain_data[spain_data['Nombre'] == jugador_laliga].iloc[0]
-        datos_bundesliga = bundesliga_data[bundesliga_data['Nombre'] == jugador_bundesliga].iloc[0]
-
-        # 3.1 Gráfica de evolución temporal
-        meses_laliga, valores_laliga = generar_valores_mensuales(
-            datos_laliga['Valor de Mercado en 01/01/2024'],
-            datos_laliga['Valor de Mercado Actual']
-        )
-        meses_bundesliga, valores_bundesliga = generar_valores_mensuales(
-            datos_bundesliga['Valor de Mercado en 01/01/2024'],
-            datos_bundesliga['Valor de Mercado Actual']
-        )
-
-        fig_evolucion = go.Figure()
-
-        fig_evolucion.add_trace(go.Scatter(
-            x=meses_laliga,
-            y=valores_laliga,
-            mode='lines+markers',
-            name=f"{jugador_laliga} (LaLiga)",
-            line=dict(color='red', width=3),
-            marker=dict(size=10)
-        ))
-
-        fig_evolucion.add_trace(go.Scatter(
-            x=meses_bundesliga,
-            y=valores_bundesliga,
-            mode='lines+markers',
-            name=f"{jugador_bundesliga} (Bundesliga)",
-            line=dict(color='blue', width=3),
-            marker=dict(size=10)
-        ))
-
-        fig_evolucion.update_layout(
-            title='Evolución Mensual del Valor de Mercado',
-            xaxis_title='Mes',
-            yaxis_title='Valor de Mercado (€)',
-            hovermode='x unified',
-            showlegend=True
-        )
-
-        st.plotly_chart(fig_evolucion)
-
-        # 3.2 Gráfica de barras comparativa
-        fig_barras = go.Figure(data=[
-            go.Bar(name='Valor Inicial', 
-                  x=['LaLiga', 'Bundesliga'], 
-                  y=[datos_laliga['Valor de Mercado en 01/01/2024'], 
-                     datos_bundesliga['Valor de Mercado en 01/01/2024']],
-                  marker_color=['rgba(255, 0, 0, 0.7)', 'rgba(0, 0, 255, 0.7)']),
-            go.Bar(name='Valor Actual', 
-                  x=['LaLiga', 'Bundesliga'], 
-                  y=[datos_laliga['Valor de Mercado Actual'], 
-                     datos_bundesliga['Valor de Mercado Actual']],
-                  marker_color=['rgba(255, 0, 0, 0.9)', 'rgba(0, 0, 255, 0.9)'])
-        ])
-
-        fig_barras.update_layout(
-            title=f'Comparación de Valores: {jugador_laliga} vs {jugador_bundesliga}',
-            barmode='group',
-            yaxis_title='Valor de Mercado (€)'
-        )
-
-        st.plotly_chart(fig_barras)
-
-        # 4. Análisis de Variación Porcentual
-        variacion_laliga = ((datos_laliga['Valor de Mercado Actual'] - 
-                            datos_laliga['Valor de Mercado en 01/01/2024']) / 
-                            datos_laliga['Valor de Mercado en 01/01/2024'] * 100)
-        
-        variacion_bundesliga = ((datos_bundesliga['Valor de Mercado Actual'] - 
-                                datos_bundesliga['Valor de Mercado en 01/01/2024']) / 
-                                datos_bundesliga['Valor de Mercado en 01/01/2024'] * 100)
-
-        # Gráfica de variación porcentual
-        fig_variacion = go.Figure(data=[
-            go.Bar(
-                x=['LaLiga', 'Bundesliga'],
-                y=[variacion_laliga, variacion_bundesliga],
-                marker_color=['red', 'blue'],
-                text=[f"{variacion_laliga:.1f}%", f"{variacion_bundesliga:.1f}%"],
-                textposition='auto',
-            )
-        ])
-
-        fig_variacion.update_layout(
-            title='Variación Porcentual del Valor de Mercado',
-            yaxis_title='Variación (%)',
-            showlegend=False
-        )
-
-        st.plotly_chart(fig_variacion)
-
-        # Análisis detallado
-        st.write(f"""
-        ### Análisis Comparativo Detallado
-
-        #### 1. Distribución General (Gráfica de Violín)
-        - Muestra la concentración de valores en diferentes rangos
-        - Permite identificar patrones de valoración en cada liga
-        - Revela la dispersión y simetría de los valores
-
-        #### 2. Relación Edad-Valor (Gráfica de Dispersión)
-        - Visualiza la correlación entre edad y valor de mercado
-        - Identifica tendencias de valoración por edad
-        - Permite comparar políticas de valoración entre ligas
-
-        #### 3. Análisis Individual
-
-        **{jugador_laliga} (LaLiga)**
-        - Valor inicial (Enero 2024): €{datos_laliga['Valor de Mercado en 01/01/2024']:,}
-        - Valor actual: €{datos_laliga['Valor de Mercado Actual']:,}
-        - Variación porcentual: {variacion_laliga:.2f}%
-        - Tendencia: {'Positiva ↑' if variacion_laliga > 0 else 'Negativa ↓' if variacion_laliga < 0 else 'Estable →'}
-
-        **{jugador_bundesliga} (Bundesliga)**
-        - Valor inicial (Enero 2024): €{datos_bundesliga['Valor de Mercado en 01/01/2024']:,}
-        - Valor actual: €{datos_bundesliga['Valor de Mercado Actual']:,}
-        - Variación porcentual: {variacion_bundesliga:.2f}%
-        - Tendencia: {'Positiva ↑' if variacion_bundesliga > 0 else 'Negativa ↓' if variacion_bundesliga < 0 else 'Estable →'}
-
-        #### 4. Factores Influyentes
-        
-        **Rendimiento Deportivo**
-        - Participación en competiciones
-        - Estadísticas individuales
-        - Impacto en resultados del equipo
-        
-        **Factores Externos**
-        - Lesiones o tiempo de inactividad
-        - Situación contractual
-        - Edad y potencial de desarrollo
-        - Demanda en el mercado
-        
-        #### 5. Conclusiones del Análisis
-        - {'El jugador de LaLiga muestra una tendencia más pronunciada' if abs(variacion_laliga) > abs(variacion_bundesliga) else 'El jugador de Bundesliga muestra una tendencia más pronunciada'}
-        - Diferencias entre ligas: {'Los valores sugieren una valoración más alta en LaLiga' if datos_laliga['Valor de Mercado Actual'] > datos_bundesliga['Valor de Mercado Actual'] else 'Los valores sugieren una valoración más alta en Bundesliga'}
-        - Oportunidades de mercado: {'Potencial de inversión en crecimiento' if variacion_laliga > 0 or variacion_bundesliga > 0 else 'Momento de cautela en inversiones'}
-        """)
-    
-    else:
-        # Para las otras visualizaciones (Evolución Individual, Comparación entre Jugadores, etc.)
-        visualizacion = st.selectbox(
-            "Seleccione tipo de visualización:",
-            ["Evolución Individual", "Comparación entre Jugadores"]
-        )
-
-        # Selección de datos según la liga
-        if liga_seleccionada == "LaLiga":
-            data = spain_data
-        elif liga_seleccionada == "Bundesliga":
-            data = bundesliga_data
-        
-        # Visualización: Evolución Individual
-        if visualizacion == "Evolución Individual":
-            st.subheader(f"Evolución Individual del Valor de Mercado - {liga_seleccionada}")
-            nombre_jugador = st.selectbox("Selecciona un jugador:", data['Nombre'].unique())
+            self.model = RandomForestClassifier(n_estimators=100)
+            self.training_history = []
             
-            jugador = data[data['Nombre'] == nombre_jugador]
-            if not jugador.empty:
-                valor_inicial = jugador['Valor de Mercado en 01/01/2024'].iloc[0]
-                valor_final = jugador['Valor de Mercado Actual'].iloc[0]
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            training_panel = st.empty()
+            chart_placeholder = st.empty()
+
+            def create_training_panel(epoch, accuracy, feature_importances):
+                feature_bars = "\n".join([
+                    f"Longitud   {'▮' * int(fi[0]*40)} {fi[0]*100:.1f}%",
+                    f"Mayúsculas {'▮' * int(fi[1]*40)} {fi[1]*100:.1f}%",
+                    f"Dígitos    {'▮' * int(fi[2]*40)} {fi[2]*100:.1f}%",
+                    f"Símbolos   {'▮' * int(fi[3]*40)} {fi[3]*100:.1f}%",
+                    f"Unicidad   {'▮' * int(fi[4]*40)} {fi[4]*100:.1f}%"
+                ])
                 
-                meses, valores = generar_valores_mensuales(valor_inicial, valor_final)
+                panel = f"""
+                ╭────────────────── WildPassPro - Entrenamiento de IA ──────────────────╮
+                │                                                                        │
+                │ Progreso del Entrenamiento:                                            │
+                │ Árboles creados: {epoch}/100                                           │
+                │ Precisión actual: {accuracy:.1%}                                      │
+                │                                                                        │
+                │ Características más importantes:                                       │
+                {feature_bars}
+                │                                                                        │
+                │ Creando protección inteligente...                                      │
+                ╰────────────────────────────────────────────────────────────────────────╯
+                """
+                return panel
+
+            for epoch in range(1, 101):
+                self.model.fit(X_train, y_train)
+                acc = self.model.score(X_test, y_test)
+                self.training_history.append(acc)
+                fi = self.model.feature_importances_ if hasattr(self.model, 'feature_importances_') else [0.35, 0.25, 0.20, 0.15, 0.05]
                 
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=meses,
-                    y=valores,
-                    mode='lines+markers',
-                    name=nombre_jugador,
-                    line=dict(width=3),
-                    marker=dict(size=10)
-                ))
+                df = pd.DataFrame({'Época': range(1, epoch+1), 'Precisión': self.training_history})
+                fig = px.line(df, x='Época', y='Precisión', title='Progreso del Entrenamiento')
+                chart_placeholder.plotly_chart(fig)
                 
-                fig.update_layout(
-                    title=f'Evolución Mensual del Valor de Mercado de {nombre_jugador}',
-                    xaxis_title='Mes',
-                    yaxis_title='Valor de Mercado (€)',
-                    hovermode='x unified',
-                    showlegend=True
-                )
-                st.plotly_chart(fig)
-                
-                df_mensual = pd.DataFrame({
-                    'Mes': meses,
-                    'Valor de Mercado (€)': [f"€{int(v):,}" for v in valores]
-                })
-                st.write("Valores mensuales:")
-                st.dataframe(df_mensual)
+                progress_bar.progress(epoch/100)
+                status_text.text(f"Época: {epoch} - Precisión: {acc:.2%}")
+                training_panel.code(create_training_panel(epoch, acc, fi))
+                time.sleep(0.05)
 
-        # Visualización: Comparación entre Jugadores
-        elif visualizacion == "Comparación entre Jugadores":
-            if liga_seleccionada == "Comparativa":
-                st.subheader("Comparación entre Jugadores de LaLiga y Bundesliga")
-                col1, col2 = st.columns(2)
-                with col1:
-                    jugador1 = st.selectbox("Jugador de LaLiga:", spain_data['Nombre'].unique())
-                with col2:
-                    jugador2 = st.selectbox("Jugador de Bundesliga:", bundesliga_data['Nombre'].unique())
+            joblib.dump(self.model, "local_pass_model.pkl")
+            
+            features = ['Longitud', 'Mayúsculas', 'Dígitos', 'Símbolos', 'Unicidad']
+            fig = px.bar(x=features, y=fi, title='Importancia de las Características')
+            st.plotly_chart(fig)
+            
+            st.success(f"🎉 Modelo entrenado! Precisión: {acc:.2%}")
+            return True
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            return False
 
-                if jugador1 and jugador2:
-                    fig = go.Figure()
-
-                    # Datos LaLiga
-                    datos_jugador1 = spain_data[spain_data['Nombre'] == jugador1]
-                    valor_inicial1 = datos_jugador1['Valor de Mercado en 01/01/2024'].iloc[0]
-                    valor_final1 = datos_jugador1['Valor de Mercado Actual'].iloc[0]
-                    meses1, valores1 = generar_valores_mensuales(valor_inicial1, valor_final1)
-
-                    # Datos Bundesliga
-                    datos_jugador2 = bundesliga_data[bundesliga_data['Nombre'] == jugador2]
-                    valor_inicial2 = datos_jugador2['Valor de Mercado en 01/01/2024'].iloc[0]
-                    valor_final2 = datos_jugador2['Valor de Mercado Actual'].iloc[0]
-                    meses2, valores2 = generar_valores_mensuales(valor_inicial2, valor_final2)
-
-                    fig.add_trace(go.Scatter(
-                        x=meses1,
-                        y=valores1,
-                        mode='lines+markers',
-                        name=f"{jugador1} (LaLiga)",
-                        line=dict(width=3),
-                        marker=dict(size=10)
-                    ))
-
-                    fig.add_trace(go.Scatter(
-                        x=meses2,
-                        y=valores2,
-                        mode='lines+markers',
-                        name=f"{jugador2} (Bundesliga)",
-                        line=dict(width=3),
-                        marker=dict(size=10)
-                    ))
-
-                    fig.update_layout(
-                        title='Comparación de Valores de Mercado entre Ligas',
-                        xaxis_title='Mes',
-                        yaxis_title='Valor de Mercado (€)',
-                        hovermode='x unified',
-                        showlegend=True
-                    )
-                    st.plotly_chart(fig)
-
-                    # Análisis
-                    st.write(f"""
-                    ### Análisis de la Comparación:
-                    - **{jugador1} (LaLiga)**:
-                        - Valor Inicial: €{int(valor_inicial1):,}
-                        - Valor Actual: €{int(valor_final1):,}
-                    - **{jugador2} (Bundesliga)**:
-                        - Valor Inicial: €{int(valor_inicial2):,}
-                        - Valor Actual: €{int(valor_final2):,}
-
-                    Este análisis resalta las diferencias en las trayectorias de los jugadores seleccionados, 
-                    permitiendo observar cómo han evolucionado sus valores de mercado a lo largo del tiempo.
-                    """)
-            else:
-                st.subheader(f"Comparación entre Jugadores - {liga_seleccionada}")
-                col1, col2 = st.columns(2)
-                with col1:
-                    jugador1 = st.selectbox("Primer jugador:", data['Nombre'].unique())
-                with col2:
-                    jugador2 = st.selectbox("Segundo jugador:", data['Nombre'].unique())
-
-                if jugador1 and jugador2:
-                    fig = go.Figure()
-
-                    for jugador in [jugador1, jugador2]:
-                        datos_jugador = data[data['Nombre'] == jugador]
-                        valor_inicial = datos_jugador['Valor de Mercado en 01/01/2024'].iloc[0]
-                        valor_final = datos_jugador['Valor de Mercado Actual'].iloc[0]
-
-                        meses, valores = generar_valores_mensuales(valor_inicial, valor_final)
-
-                        fig.add_trace(go.Scatter(
-                            x=meses,
-                            y=valores,
-                            mode='lines+markers',
-                            name=jugador,
-                            line=dict(width=3),
-                            marker=dict(size=10)
-                        ))
-
-                    fig.update_layout(
-                        title=f'Comparación de Valores de Mercado - {liga_seleccionada}',
-                        xaxis_title='Mes',
-                        yaxis_title='Valor de Mercado (€)',
-                        hovermode='x unified',
-                        showlegend=True
-                    )
-                    st.plotly_chart(fig)
-
-                    # Análisis
-                    st.write(f"""
-                    ### Análisis de la Comparación:
-                    Comparando los valores de mercado de **{jugador1}** y **{jugador2}** en la misma liga, 
-                    es posible observar diferencias significativas en sus trayectorias.
-                    
-                    Estos patrones pueden estar relacionados con:
-                    - **Rendimiento reciente**.
-                    - **Impacto en sus equipos**.
-                    - **Expectativas futuras en el mercado de fichajes**.
-                    """)
-
-
-
-elif menu_principal == "Objetivos":
-    st.title("Objetivos del Proyecto")
-    st.write("""
-    ### Objetivos Principales:
-    - Analizar y visualizar el valor de mercado de los jugadores en LaLiga y Bundesliga
-    - Evaluar el incremento porcentual del valor de mercado a lo largo del tiempo
-    - Identificar patrones y tendencias en la valoración de jugadores
-    - Comparar las valoraciones entre las diferentes ligas
-    """)
-
-elif menu_principal == "Herramientas":
-    st.title("Herramientas y Tecnologías")
+def secure_folder_section():
+    st.subheader("🔐 Carpeta Segura")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.header("Tecnologías Principales")
-        st.write("""
-        - Python
-        - Pandas
-        - Streamlit
-        - Plotly
-        - Google Colab
-        - Jupiter Notebook
-        """)
+        st.markdown("### Subir Archivos")
+        uploaded_file = st.file_uploader("Selecciona archivo a proteger:", 
+                                       type=["txt", "pdf", "png", "jpg", "docx", "xlsx"])
+        access_key = st.text_input("Crea una llave de acceso:", type="password")
+        
+        if uploaded_file and access_key:
+            if len(access_key) < 8:
+                st.error("La llave debe tener al menos 8 caracteres")
+            else:
+                file_path = os.path.join(SECURE_FOLDER, uploaded_file.name)
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                SecureVault.encrypt_file(file_path, access_key)
+                st.success("Archivo protegido con éxito!")
+                st.info("Guarda bien tu llave de acceso, sin ella no podrás recuperar el archivo")
     
     with col2:
-        st.header("Bibliotecas Adicionales")
-        st.write("""
-        - Matplotlib
-        - Seaborn
-        - Streamlit-Lottie
-        """)
+        st.markdown("### Acceder a Archivos")
+        access_key_download = st.text_input("Ingresa tu llave de acceso:", type="password")
+        
+        if access_key_download:
+            files = [f for f in os.listdir(SECURE_FOLDER) 
+                    if os.path.isfile(os.path.join(SECURE_FOLDER, f))]
+            
+            if files:
+                selected_file = st.selectbox("Archivos disponibles:", files)
+                
+                if selected_file:
+                    file_path = os.path.join(SECURE_FOLDER, selected_file)
+                    temp_path = f"temp_{selected_file}"
+                    
+                    if SecureVault.decrypt_file(file_path, access_key_download):
+                        with open(file_path, "rb") as f:
+                            st.download_button(
+                                label="Descargar archivo",
+                                data=f,
+                                file_name=selected_file,
+                                mime="application/octet-stream"
+                            )
+                        SecureVault.encrypt_file(file_path, access_key_download)
+                    else:
+                        st.error("Llave de acceso incorrecta o archivo corrupto")
+            else:
+                st.info("No hay archivos protegidos disponibles")
 
-elif menu_principal == "Resultados":
-    st.title("Resultados")
+def chat_interface():
+    st.subheader("💬 Chat de Seguridad")
     
-    if liga_seleccionada == "Comparativa":
-        tab1, tab2, tab3 = st.tabs(["Estadísticas Generales", "Análisis Comparativo", "Recomendaciones"])
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = [{
+            "role": "assistant", 
+            "content": "¡Hola! Soy el asistente virtual de WildPassPro. ¿En qué puedo ayudarte?"
+        }]
+    
+    with st.container():
+        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
         
-        with tab1:
-            st.header("Estadísticas Generales")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("LaLiga")
-                st.dataframe(spain_data[['Valor de Mercado en 01/01/2024', 'Valor de Mercado Actual']].describe())
-            
-            with col2:
-                st.subheader("Bundesliga")
-                st.dataframe(bundesliga_data[['Valor de Mercado en 01/01/2024', 'Valor de Mercado Actual']].describe())
-        
-        with tab2:
-            st.header("Análisis Comparativo")
-            fig = go.Figure()
-            
-            fig.add_trace(go.Box(
-                y=spain_data['Valor de Mercado Actual'],
-                name='LaLiga'
-            ))
-            
-            fig.add_trace(go.Box(
-                y=bundesliga_data['Valor de Mercado Actual'],
-                name='Bundesliga'
-            ))
-            
-            fig.update_layout(
-                title='Distribución de Valores de Mercado por Liga',
-                yaxis_title='Valor de Mercado (€)'
-            )
-            st.plotly_chart(fig)
-        
-        with tab3:
-            st.header("Recomendaciones")
-            st.write("""
-            Basadas en el análisis comparativo:
-            - Recomendaciones para clubes de ambas ligas
-            - Estrategias de inversión considerando diferencias entre mercados
-            - Oportunidades de mercado en ambas ligas
-            """)
-    else:
-        tab1, tab2, tab3 = st.tabs(["Estadísticas Generales", "Análisis de Tendencias", "Recomendaciones"])
-        
-        with tab1:
-            st.header("Estadísticas Generales")
-            if liga_seleccionada == "LaLiga":
-                st.dataframe(spain_data[['Valor de Mercado en 01/01/2024', 'Valor de Mercado Actual']].describe())
+        for msg in st.session_state.chat_messages:
+            if msg["role"] == "user":
+                st.markdown(f'''
+                <div class="user-message">
+                    {msg["content"]}
+                    <div class="timestamp">{datetime.now().strftime("%H:%M")}</div>
+                </div>
+                ''', unsafe_allow_html=True)
             else:
-                st.dataframe(bundesliga_data[['Valor de Mercado en 01/01/2024', 'Valor de Mercado Actual']].describe())
+                st.markdown(f'''
+                <div class="bot-message">
+                    {msg["content"]}
+                    <div class="timestamp">{datetime.now().strftime("%H:%M")}</div>
+                </div>
+                ''', unsafe_allow_html=True)
         
-        with tab2:
-            st.header("Análisis de Tendencias")
-            fig = go.Figure()
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        if prompt := st.chat_input("Escribe tu mensaje..."):
+            st.session_state.chat_messages.append({"role": "user", "content": prompt})
             
-            if liga_seleccionada == "LaLiga":
-                fig.add_trace(go.Box(
-                    y=spain_data['Valor de Mercado en 01/01/2024'],
-                    name='Enero 2024'
-                ))
-                fig.add_trace(go.Box(
-                    y=spain_data['Valor de Mercado Actual'],
-                    name='Actual'
-                ))
-            else:
-                fig.add_trace(go.Box(
-                    y=bundesliga_data['Valor de Mercado en 01/01/2024'],
-                    name='Enero 2024'
-                ))
-                fig.add_trace(go.Box(
-                    y=bundesliga_data['Valor de Mercado Actual'],
-                    name='Actual'
-                ))
+            with st.spinner("Pensando..."):
+                response = chat_with_groq(st.session_state.chat_messages)
             
-            fig.update_layout(
-                title=f'Distribución de Valores de Mercado - {liga_seleccionada}',
-                yaxis_title='Valor de Mercado (€)'
+            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+            st.rerun()
+
+def main():
+    st.markdown('<div class="main">', unsafe_allow_html=True)
+    st.title("🔐 WildPass Pro - Gestor de Contraseñas")
+    st.markdown("---")
+    
+    model = PasswordModel()
+    
+    menu = st.sidebar.radio(
+        "Menú Principal",
+        ["🏠 Inicio", "📊 Analizar", "🔧 Entrenar IA", "💬 Chat", "🗃️ Carpeta Segura"]
+    )
+    
+    if menu == "🏠 Inicio":
+        st.subheader("Generador de Claves")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🔢 Generar PIN"):
+                pin = model.generate_pin()
+                st.code(pin, language="text")
+                st.session_state.generated_passwords.append(pin)
+        
+        with col2:
+            if st.button("🔑 Generar Llave"):
+                access_key = model.generate_access_key()
+                st.code(access_key, language="text")
+                st.session_state.generated_passwords.append(access_key)
+        
+        with col3:
+            if st.button("🔒 Generar Contraseña"):
+                password = model.generate_strong_password()
+                st.code(password, language="text")
+                st.session_state.generated_passwords.append(password)
+        
+        if st.session_state.generated_passwords:
+            pass_str = "\n".join(st.session_state.generated_passwords)
+            st.download_button(
+                label="⬇️ Descargar Contraseñas",
+                data=pass_str,
+                file_name="contraseñas_seguras.txt",
+                mime="text/plain"
             )
-            st.plotly_chart(fig)
         
-        with tab3:
-            st.header("Recomendaciones")
-            st.write(f"""
-            Basadas en el análisis de datos de {liga_seleccionada}:
-            - Recomendaciones para clubes
-            - Estrategias de inversión
-            - Oportunidades de mercado
-            """)
+        try:
+            sample_passwords = [model.generate_strong_password() for _ in range(50)]
+            strengths = [model.model.predict_proba([model.extract_features(pwd)])[0][1] for pwd in sample_passwords]
+            fig = px.histogram(x=strengths, nbins=20, title='Distribución de Fortaleza de Contraseñas')
+            st.plotly_chart(fig)
+        except:
+            pass
+    
+    elif menu == "📊 Analizar":
+        st.subheader("Analizador de Seguridad")
+        password = st.text_input("Introduce una contraseña:", type="password")
+        
+        if password:
+            if model.model is None:
+                st.error("Primero entrena el modelo!")
+            else:
+                try:
+                    features = model.extract_features(password)
+                    score = model.model.predict_proba([features])[0][1] * 100
+                    
+                    st.metric("Puntuación de Seguridad", f"{score:.1f}%")
+                    st.progress(score/100)
+                    
+                    df = pd.DataFrame({
+                        'Característica': ['Longitud', 'Mayúsculas', 'Dígitos', 'Símbolos', 'Unicidad'],
+                        'Valor': features
+                    })
+                    fig = px.bar(df, x='Característica', y='Valor', title='Análisis de Características')
+                    st.plotly_chart(fig)
+                    
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    elif menu == "🔧 Entrenar IA":
+        st.subheader("Entrenamiento del Modelo")
+        if st.button("🚀 Iniciar Entrenamiento"):
+            with st.spinner("Entrenando IA..."):
+                if model.train_model():
+                    st.balloons()
+    
+    elif menu == "💬 Chat":
+        chat_interface()
+    
+    elif menu == "🗃️ Carpeta Segura":
+        secure_folder_section()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
-else:  # Conclusiones
-    st.title("Conclusiones")
-    if liga_seleccionada == "Comparativa":
-        st.write("""
-        ### Principales Hallazgos:
-        - Comparativa entre LaLiga y Bundesliga muestra patrones interesantes en la valoración de jugadores
-        - Las diferencias entre mercados ofrecen oportunidades únicas de inversión
-        - La gestión basada en datos puede mejorar significativamente las estrategias de los equipos en ambas ligas
-        """)
-    else:
-        st.write(f"""
-        ### Principales Hallazgos en {liga_seleccionada}:
-        - El análisis de datos en el fútbol ofrece insights valiosos para la toma de decisiones
-        - Las tendencias del mercado muestran patrones significativos en la valoración de jugadores
-        - La gestión basada en datos puede mejorar significativamente las estrategias de los equipos
-        """)
-
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.info("ANÁLISIS DE LAS ESTADÍSTICAS QUE TIENEN MAYOR CORRELACIÓN CON EL VALOR DE MERCADO DE LOS JUGADORES DE FUTBOL EN ESPAÑA Y ALEMANIA")
+if __name__ == "__main__":
+    main()
