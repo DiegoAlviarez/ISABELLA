@@ -281,7 +281,7 @@ def main():
                 st.subheader("🧠 Análisis de Groq")
                 analysis = groq_analysis(password)
                 st.markdown(analysis)
-with tab4:
+    with tab4:
         st.subheader("💬 Asistente de Seguridad")
         
         if "chat_history" not in st.session_state:
